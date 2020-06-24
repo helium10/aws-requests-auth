@@ -45,7 +45,8 @@ class AWSRequestsAuth(requests.auth.AuthBase):
                  aws_host,
                  aws_region,
                  aws_service,
-                 aws_token=None):
+                 aws_token=None,
+                 include_headers=None,):
         """
         Example usage for talking to an AWS Elasticsearch Service:
 
@@ -65,6 +66,7 @@ class AWSRequestsAuth(requests.auth.AuthBase):
         self.aws_region = aws_region
         self.service = aws_service
         self.aws_token = aws_token
+        self.include_headers = include_headers
 
     def __call__(self, r):
         """
@@ -111,23 +113,46 @@ class AWSRequestsAuth(requests.auth.AuthBase):
         canonical_uri = AWSRequestsAuth.get_canonical_path(r)
 
         canonical_querystring = AWSRequestsAuth.get_canonical_querystring(r)
+        
+        # Create the list of canonical headers to include. 
+        # By default, host and x-amz-date are required.
+        canonical_headers = [
+            ('host', self.aws_host),
+            ('x-amz-date', amzdate),
+        ]
 
-        # Create the canonical headers and signed headers. Header names
-        # and value must be trimmed and lowercase, and sorted in ASCII order.
-        # Note that there is a trailing \n.
-        canonical_headers = ('host:' + self.aws_host + '\n' +
-                             'x-amz-date:' + amzdate + '\n')
+        # If aws_token is to be used, it should be included
         if aws_token:
-            canonical_headers += 'x-amz-security-token:' + aws_token + '\n'
+            canonical_headers.append((
+                'x-amz-security-token',
+                aws_token
+            ))
 
-        # Create the list of signed headers. This lists the headers
-        # in the canonical_headers list, delimited with ";" and in alpha order.
-        # Note: The request can include any headers; canonical_headers and
-        # signed_headers lists those that you want to be included in the
-        # hash of the request. "Host" and "x-amz-date" are always required.
-        signed_headers = 'host;x-amz-date'
-        if aws_token:
-            signed_headers += ';x-amz-security-token'
+        # Additionally, we can include any headers specified.
+        # Header names and value must be trimmed and lowercase.
+        if self.include_headers and r.headers:
+            for header_name in self.include_headers:
+                if header_name in r.headers:
+                    header_name = header_name.lower()
+                    header_value = r.headers[header_name].strip()
+                    canonical_headers.append((
+                        header_name, 
+                        header_value,
+                    ))
+
+        # Headers are sorted and combined by newlines.
+        # Note the trailing newline.
+        canonical_header_string = "".join([
+            header_name + ":" + header_value + "\n"
+            for header_name, header_value
+            in sorted(canonical_headers)
+        ])
+        # The list of signed headers is included, separated by semicolons.
+        signed_headers = ";".join([
+            header_name
+            for header_name, header_value
+            in sorted(canonical_headers)
+        ])
 
         # Create payload hash (hash of the request body content). For GET
         # requests, the payload is an empty string ('').
@@ -147,7 +172,7 @@ class AWSRequestsAuth(requests.auth.AuthBase):
 
         # Combine elements to create create canonical request
         canonical_request = (r.method + '\n' + canonical_uri + '\n' +
-                             canonical_querystring + '\n' + canonical_headers +
+                             canonical_querystring + '\n' + canonical_header_string +
                              '\n' + signed_headers + '\n' + payload_hash)
 
         # Match the algorithm to the hashing algorithm you use, either SHA-1 or
